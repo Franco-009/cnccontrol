@@ -1,0 +1,168 @@
+#include <Stepper.h>
+
+/////////////////////// CONFIGURACIÓN MOTORES ///////////////////////
+// NEMA 17 - Ejes X y Y
+#define DIR_X 27
+#define STEP_X 14
+#define DIR_Y 25
+#define STEP_Y 26
+
+// 28BYJ-48 - Eje Z
+#define IN1 16
+#define IN2 17
+#define IN3 18
+#define IN4 19
+Stepper motorZ(2048, IN1, IN3, IN2, IN4);  // orden correcto ULN2003
+
+/////////////////////// FINALES DE CARRERA ///////////////////////
+#define ENDSTOP_X 32
+#define ENDSTOP_Y 33
+
+/////////////////////// CONFIGURACIÓN BÁSICA ///////////////////////
+const float mmPorPaso_X = 10.0;  // 1 paso = 10 mm = 1 cm
+const float mmPorPaso_Y = 10.0;
+const unsigned int velNema = 1200;  // microsegundos entre pasos
+int velocidadZ = 15;                // RPM
+
+/////////////////////// LÍMITES ///////////////////////
+const int LIMITE_PASOS_X = 28;  // recorrido total: 28 pasos = 28 cm
+const int LIMITE_PASOS_Y = 28;
+
+/////////////////////// VARIABLES ///////////////////////
+float posX = 0, posY = 0, posZ = 0;
+
+/////////////////////// SETUP ///////////////////////
+void setup() {
+  Serial.begin(115200);
+  Serial.println("✅ Mini CNC ESP32 lista con límites por pasos!");
+
+  pinMode(DIR_X, OUTPUT);
+  pinMode(STEP_X, OUTPUT);
+  pinMode(DIR_Y, OUTPUT);
+  pinMode(STEP_Y, OUTPUT);
+
+  pinMode(ENDSTOP_X, INPUT_PULLUP);
+  pinMode(ENDSTOP_Y, INPUT_PULLUP);
+
+  motorZ.setSpeed(velocidadZ);
+}
+
+/////////////////////// FUNCIONES ///////////////////////
+void moverEje(int dirPin, int stepPin, bool sentido, int pasos, int endstopPin) {
+  digitalWrite(dirPin, sentido ? HIGH : LOW);
+  for (int i = 0; i < pasos; i++) {
+    if (!sentido && digitalRead(endstopPin) == LOW) {
+      delay(10);
+      if (digitalRead(endstopPin) == LOW) {
+        Serial.println("⚠️ Final de carrera alcanzado!");
+        break;
+      }
+    }
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(velNema);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(velNema);
+  }
+}
+
+void moverX(int pasos) {
+  int nuevaPos = posX + pasos;
+
+  if (nuevaPos < 0) {
+    Serial.println("⚠️ Límite mínimo X alcanzado!");
+    pasos = -posX;
+  } else if (nuevaPos > LIMITE_PASOS_X) {
+    Serial.println("⚠️ Límite máximo X alcanzado!");
+    pasos = LIMITE_PASOS_X - posX;
+  }
+
+  bool sentido = pasos > 0;
+  moverEje(DIR_X, STEP_X, sentido, abs(pasos), ENDSTOP_X);
+  posX += pasos;
+}
+
+void moverY(int pasos) {
+  int nuevaPos = posY + pasos;
+
+  if (nuevaPos < 0) {
+    Serial.println("⚠️ Límite mínimo Y alcanzado!");
+    pasos = -posY;
+  } else if (nuevaPos > LIMITE_PASOS_Y) {
+    Serial.println("⚠️ Límite máximo Y alcanzado!");
+    pasos = LIMITE_PASOS_Y - posY;
+  }
+
+  bool sentido = pasos > 0;
+  moverEje(DIR_Y, STEP_Y, sentido, abs(pasos), ENDSTOP_Y);
+  posY += pasos;
+}
+
+void moverZ(float distanciaMM) {
+  int pasos = abs(distanciaMM * 1024 / 2);
+  motorZ.step(distanciaMM > 0 ? pasos : -pasos);
+  posZ += distanciaMM;
+}
+
+/////////////////////// HOMING ///////////////////////
+void hacerHome() {
+  Serial.println("🏠 Haciendo homing...");
+
+  digitalWrite(DIR_X, HIGH);  // ← invertido
+while (digitalRead(ENDSTOP_X) == HIGH) {
+  digitalWrite(STEP_X, HIGH);
+  delayMicroseconds(1500);
+  digitalWrite(STEP_X, LOW);
+  delayMicroseconds(1500);
+}
+
+digitalWrite(DIR_Y, HIGH);  // ← invertido
+while (digitalRead(ENDSTOP_Y) == HIGH) {
+  digitalWrite(STEP_Y, HIGH);
+  delayMicroseconds(1500);
+  digitalWrite(STEP_Y, LOW);
+  delayMicroseconds(1500);
+}
+
+  posX = 0;
+  posY = 0;
+  posZ = 0;
+
+  Serial.println("✅ Homing completo (posición 0,0,0)");
+}
+
+/////////////////////// PARSER DE COMANDOS ///////////////////////
+void interpretarComando(String cmd) {
+  cmd.trim();
+  cmd.toUpperCase();
+
+  if (cmd.startsWith("G0") || cmd.startsWith("G1")) {
+    float x = NAN, y = NAN, z = NAN;
+
+    int ix = cmd.indexOf('X');
+    int iy = cmd.indexOf('Y');
+    int iz = cmd.indexOf('Z');
+
+    if (ix != -1) x = cmd.substring(ix + 1).toFloat();
+    if (iy != -1) y = cmd.substring(iy + 1).toFloat();
+    if (iz != -1) z = cmd.substring(iz + 1).toFloat();
+
+    // Convertir mm a pasos de 1 cm
+    if (!isnan(x)) moverX((int)(x / 10.0));
+    if (!isnan(y)) moverY((int)(y / 10.0));
+    if (!isnan(z)) moverZ(z);
+
+    Serial.printf("📍 Posición actual: X=%d cm  Y=%d cm  Z=%.2f\n", (int)posX, (int)posY, posZ);
+  } else if (cmd.startsWith("HOME")) {
+    hacerHome();
+  } else {
+    Serial.println("❓ Comando desconocido");
+  }
+}
+
+/////////////////////// LOOP PRINCIPAL ///////////////////////
+void loop() {
+  if (Serial.available()) {
+    String comando = Serial.readStringUntil('\n');
+    interpretarComando(comando);
+  }
+}
